@@ -16,7 +16,7 @@ if(
 
   target_compile_options(CMakeProject1 PRIVATE /W3)
 
-  target_link_options(CMakeProject1 PRIVATE /SUBSYSTEM:WINDOWS Winmm.lib)
+  target_link_options(CMakeProject1 PRIVATE /SUBSYSTEM:WINDOWS)
 
 elseif(
   (CMAKE_CXX_COMPILER_ID STREQUAL "GNU") OR

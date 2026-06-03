@@ -3,6 +3,7 @@
 
 #include <Windows.h>
 #pragma comment(lib, "mincore")
+#pragma comment(lib, "Winmm")
 
 #include <stdio.h>
 
@@ -36,6 +37,13 @@ DWORD report_error(char *context)
 void report_error_exit(char *context)
 {
   ExitProcess(report_error(context));
+}
+
+long long int get_tick()
+{
+  LARGE_INTEGER t;
+  QueryPerformanceCounter(&t);
+  return t.QuadPart;
 }
 
 /* ------------------------------------- *
@@ -653,19 +661,23 @@ int APIENTRY WinMain(HINSTANCE hInst, HINSTANCE hInstPrev, PSTR cmdline, int cmd
   }
 
   /* --- setup loop timer --- */
-  LARGE_INTEGER last_time_tick;
-  LARGE_INTEGER tick_frequency;
-  unsigned long long int resolution_microseconds;
+  long long int last_time_tick = get_tick();
+  long long int tick_frequency;
+  long long int resolution_milliseconds;
   {
-    QueryPerformanceCounter(&last_time_tick);
-    QueryPerformanceFrequency(&tick_frequency);
+    LARGE_INTEGER tick_frequency_query;
+    QueryPerformanceFrequency(&tick_frequency_query);
+    tick_frequency = tick_frequency_query.QuadPart;
+
     TIMECAPS timecaps;
     timeGetDevCaps(&timecaps, sizeof(timecaps));
     timeBeginPeriod(timecaps.wPeriodMin);
-    resolution_microseconds = (unsigned long long int)timecaps.wPeriodMin * 1000;
+    resolution_milliseconds = (long long int)timecaps.wPeriodMin;
   }
-  unsigned long long int target_frame_time_microseconds = 1000000 / 60;
-  unsigned long long int frame_counter = 0;
+  long long int target_frame_time_microseconds = 1000000 / 60;
+  long long int last_report_time = last_time_tick;
+  long long int microseconds_spent_on_work_since_last_report = 0;
+  long long int frames_since_last_report = 0;
 
   /* --- main loop --- */
   int retval = 0;
@@ -731,21 +743,42 @@ int APIENTRY WinMain(HINSTANCE hInst, HINSTANCE hInstPrev, PSTR cmdline, int cmd
 
     /* --- control loop timing --- */
     {
-      LARGE_INTEGER current_time_tick;
-      QueryPerformanceCounter(&current_time_tick);
-      unsigned long long int microseconds_spent = (current_time_tick.QuadPart - last_time_tick.QuadPart) * 1000000 / tick_frequency.QuadPart;
-      unsigned long long int frames_missed = microseconds_spent / target_frame_time_microseconds;
-      DWORD milliseconds_to_sleep = (DWORD)((target_frame_time_microseconds - microseconds_spent % target_frame_time_microseconds) / resolution_microseconds * resolution_microseconds / 1000);
-      unsigned long long int target_frame_end_tick = current_time_tick.QuadPart + (frames_missed + 1) * target_frame_time_microseconds * tick_frequency.QuadPart / 1000000;
+      long long int current_time_tick = get_tick();
+
+      long long int microseconds_spent = (current_time_tick - last_time_tick) * 1000000 / tick_frequency;
+      long long int frames_missed = microseconds_spent / target_frame_time_microseconds;
+      microseconds_spent_on_work_since_last_report += microseconds_spent;
+      frames_since_last_report++;
+
+      DWORD milliseconds_to_sleep = (DWORD)((target_frame_time_microseconds - microseconds_spent % target_frame_time_microseconds) / 1000 / resolution_milliseconds * resolution_milliseconds);
       Sleep(milliseconds_to_sleep);
-      while (QueryPerformanceCounter(&current_time_tick) && (unsigned long long int)current_time_tick.QuadPart < target_frame_end_tick);
-      game_input.dt = (float)(current_time_tick.QuadPart - last_time_tick.QuadPart) / (float)tick_frequency.QuadPart;
+      long long int target_frame_end_tick = last_time_tick + (frames_missed + 1) * target_frame_time_microseconds * tick_frequency / 1000000;
+      do {
+        current_time_tick = get_tick();
+      } while (current_time_tick < target_frame_end_tick);
+      
+      game_input.dt = (float)(current_time_tick - last_time_tick) / (float)tick_frequency;
       last_time_tick = current_time_tick;
+
+      long long int microseconds_since_report = (current_time_tick - last_report_time) * 1000000 / tick_frequency;
+      if (microseconds_since_report > 1000000)
+      {
+        long long int average_microseconds_per_frame = microseconds_spent_on_work_since_last_report / frames_since_last_report;
+        float fps = (float)frames_since_last_report / (float)microseconds_since_report * 1000000.0f;
+
+        char buffer[256];
+        snprintf(buffer, 256, "mus/frame = %lld;   fps = %lld\n", average_microseconds_per_frame, frames_since_last_report);
+        OutputDebugStringA(buffer);
+
+        last_report_time = current_time_tick;
+        microseconds_spent_on_work_since_last_report = 0;
+        frames_since_last_report = 0;
+      }
 
       if (frames_missed > 0)
       {
         char buffer[256];
-        snprintf(buffer, 256, "missed %llu frame(s)\n", frames_missed);
+        snprintf(buffer, 256, "missed %lld frame(s)\n", frames_missed);
         OutputDebugStringA(buffer);
       }
     }
@@ -753,7 +786,7 @@ int APIENTRY WinMain(HINSTANCE hInst, HINSTANCE hInstPrev, PSTR cmdline, int cmd
   }
 
   /* --- tidy up --- */
-  timeEndPeriod((UINT)(resolution_microseconds / 1000));
+  timeEndPeriod((UINT)(resolution_milliseconds));
   
   return retval;
 }
