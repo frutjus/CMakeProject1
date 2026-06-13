@@ -12,3 +12,5 @@ typedef enum {
   false,
   true,
 } bool;
+
+#define OPENGL

@@ -1,9 +1,10 @@
 ﻿#include "platform.h"
 #include "defs.h"
+#include "opengl.h"
+#include "lib/gl.h"
+#include "lib/glext.h"
 
 #include <Windows.h>
-#pragma comment(lib, "mincore")
-#pragma comment(lib, "Winmm")
 
 #include <stdio.h>
 
@@ -50,6 +51,7 @@ long long int get_tick()
             Main Win32 Handling
  * ------------------------------------- */
 
+#ifndef OPENGL
 typedef struct {
   void* buffer;
   int width; //in pixels
@@ -59,6 +61,7 @@ typedef struct {
   int size; //in bytes
   BITMAPINFOHEADER bmi;
 } win32_pixel_buffer;
+#endif
 
 typedef struct {
   void* start;
@@ -68,6 +71,7 @@ typedef struct {
   int size_used;
 } ring_buffer;
 
+#ifndef OPENGL
 void create_pixel_buffer(win32_pixel_buffer* pixels, int width, int height)
 {
   int bytesPerPixel = 4;
@@ -118,6 +122,7 @@ void flip_buffers(HDC hdc, int screenWidth, int screenHeight, win32_pixel_buffer
     SRCCOPY
   );
 }
+#endif
 
 Key key_from_scancode(WORD scancode)
 {
@@ -541,10 +546,52 @@ LRESULT process_mouse_button(HWND hWnd, UINT message, WPARAM wParam, LPARAM lPar
   return 0;
 }
 
+
+void import_opengl_functions()
+{
+  glCreateShader = (PFNGLCREATESHADERPROC)wglGetProcAddress("glCreateShader");
+  glShaderSource = (PFNGLSHADERSOURCEPROC)wglGetProcAddress("glShaderSource");
+  glCompileShader = (PFNGLCOMPILESHADERPROC)wglGetProcAddress("glCompileShader");
+  glGetShaderiv = (PFNGLGETSHADERIVPROC)wglGetProcAddress("glGetShaderiv");
+  glCreateProgram = (PFNGLCREATEPROGRAMPROC)wglGetProcAddress("glCreateProgram");
+  glAttachShader = (PFNGLATTACHSHADERPROC)wglGetProcAddress("glAttachShader");
+  glLinkProgram = (PFNGLLINKPROGRAMPROC)wglGetProcAddress("glLinkProgram");
+  glGetProgramiv = (PFNGLGETPROGRAMIVPROC)wglGetProcAddress("glGetProgramiv");
+  glGetAttribLocation = (PFNGLGETATTRIBLOCATIONPROC)wglGetProcAddress("glGetAttribLocation");
+  glUseProgram = (PFNGLUSEPROGRAMPROC)wglGetProcAddress("glUseProgram");
+  glEnableVertexAttribArray = (PFNGLENABLEVERTEXATTRIBARRAYPROC)wglGetProcAddress("glEnableVertexAttribArray");
+  glVertexAttribPointer = (PFNGLVERTEXATTRIBPOINTERPROC)wglGetProcAddress("glVertexAttribPointer");
+  glDisableVertexAttribArray = (PFNGLDISABLEVERTEXATTRIBARRAYPROC)wglGetProcAddress("glDisableVertexAttribArray");
+  glDeleteProgram = (PFNGLDELETEPROGRAMPROC)wglGetProcAddress("glDeleteProgram");
+  glIsShader = (PFNGLISSHADERPROC)wglGetProcAddress("glIsShader");
+  glIsProgram = (PFNGLISPROGRAMPROC)wglGetProcAddress("glIsProgram");
+  glGetShaderInfoLog = (PFNGLGETSHADERINFOLOGPROC)wglGetProcAddress("glGetShaderInfoLog");
+  glGetProgramInfoLog = (PFNGLGETPROGRAMINFOLOGPROC)wglGetProcAddress("glGetProgramInfoLog");
+  glGenBuffers = (PFNGLGENBUFFERSPROC)wglGetProcAddress("glGenBuffers");
+  glBindBuffer = (PFNGLBINDBUFFERPROC)wglGetProcAddress("glBindBuffer");
+  glBufferData = (PFNGLBUFFERDATAPROC)wglGetProcAddress("glBufferData");
+  glDeleteBuffers = (PFNGLDELETEBUFFERSPROC)wglGetProcAddress("glDeleteBuffers");
+  glGetUniformLocation = (PFNGLGETUNIFORMLOCATIONPROC)wglGetProcAddress("glGetUniformLocation");
+  glUniform1f = (PFNGLUNIFORM1FPROC)wglGetProcAddress("glUniform1f");
+  glUniform2f = (PFNGLUNIFORM2FPROC)wglGetProcAddress("glUniform2f");
+  glUniform1fv = (PFNGLUNIFORM1FVPROC)wglGetProcAddress("glUniform1fv");
+  glNamedBufferData = (PFNGLNAMEDBUFFERDATAPROC)wglGetProcAddress("glNamedBufferData");
+  glEnableVertexArrayAttrib = (PFNGLENABLEVERTEXARRAYATTRIBPROC)wglGetProcAddress("glEnableVertexArrayAttrib");
+  glDisableVertexArrayAttrib = (PFNGLDISABLEVERTEXARRAYATTRIBPROC)wglGetProcAddress("glDisableVertexArrayAttrib");
+  glCreateBuffers = (PFNGLCREATEBUFFERSPROC)wglGetProcAddress("glCreateBuffers");
+  glVertexAttribDivisor = (PFNGLVERTEXATTRIBDIVISORPROC)wglGetProcAddress("glVertexAttribDivisor");
+  glUniform1iv = (PFNGLUNIFORM1IVPROC)wglGetProcAddress("glUniform1iv");
+  glBindBufferBase = (PFNGLBINDBUFFERBASEPROC)wglGetProcAddress("glBindBufferBase");
+  glMemoryBarrier = (PFNGLMEMORYBARRIERPROC)wglGetProcAddress("glMemoryBarrier");
+}
+
+
 struct {
   Input* game_input;
   ring_buffer* earray;
+#ifndef OPENGL
   win32_pixel_buffer pixels;
+#endif
   int resolution_x;
   int resolution_y;
 } global_state;
@@ -566,7 +613,12 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
   }
 
   case WM_SIZE:
+  {
+    global_state.resolution_x = LOWORD(lParam);
+    global_state.resolution_y = HIWORD(lParam);
+    glViewport(0, 0, global_state.resolution_x, global_state.resolution_y);
     return 0;
+  }
 
   case WM_KEYDOWN:
   case WM_KEYUP:
@@ -599,7 +651,7 @@ int APIENTRY WinMain(HINSTANCE hInst, HINSTANCE hInstPrev, PSTR cmdline, int cmd
   /* --- register window class and create window --- */
   HWND window;
   {
-    WNDCLASSA window_class;
+    WNDCLASSA window_class = {0};
     window_class.style = CS_HREDRAW | CS_VREDRAW | CS_OWNDC;
     window_class.lpfnWndProc = WndProc;
     window_class.cbClsExtra = 0;
@@ -642,8 +694,60 @@ int APIENTRY WinMain(HINSTANCE hInst, HINSTANCE hInstPrev, PSTR cmdline, int cmd
     UpdateWindow(hWnd);
   }
 
+#ifndef OPENGL
   /* --- create & allocate pixel buffer --- */
   create_pixel_buffer(&global_state.pixels, global_state.resolution_x, global_state.resolution_y);
+#endif
+
+  /* --- initialise opengl --- */
+  {
+    PIXELFORMATDESCRIPTOR pixel_format_descriptor = { 
+      .nSize = sizeof(PIXELFORMATDESCRIPTOR),
+      .nVersion = 1,
+      .dwFlags = PFD_DRAW_TO_WINDOW
+               | PFD_SUPPORT_OPENGL
+               | PFD_DOUBLEBUFFER,
+      .iPixelType = PFD_TYPE_RGBA,
+      .cColorBits = 32,
+      .cRedBits = 0,
+      .cRedShift = 0,
+      .cGreenBits = 0,
+      .cGreenShift = 0,
+      .cBlueBits = 0,
+      .cBlueShift = 0,
+      .cAlphaBits = 0,
+      .cAlphaShift = 0,
+      .cAccumBits = 0,
+      .cAccumRedBits = 0,
+      .cAccumGreenBits = 0,
+      .cAccumBlueBits = 0,
+      .cAccumAlphaBits = 0,
+      .cDepthBits = 32,
+      .cStencilBits = 0,
+      .cAuxBuffers = 0,
+      .iLayerType = PFD_MAIN_PLANE,
+      .bReserved = 0,
+      .dwLayerMask = 0,
+      .dwVisibleMask = 0,
+      .dwDamageMask = 0
+    };
+
+    HDC hdc = GetDC(window);
+
+    int pixel_format = ChoosePixelFormat(hdc, &pixel_format_descriptor);
+    if (pixel_format == 0) report_error_exit("choosing pixel format");
+
+    if (SetPixelFormat(hdc, pixel_format, &pixel_format_descriptor) == FALSE) report_error_exit("setting pixel format");
+
+    HGLRC opengl_context = wglCreateContext(hdc);
+    if (opengl_context == NULL) report_error_exit("creating opengl context");
+
+    if (wglMakeCurrent(hdc, opengl_context) == FALSE) report_error_exit("making opengl context current");
+
+    ReleaseDC(window, hdc);
+
+    import_opengl_functions();
+  }
 
   /* --- allocate memory --- */
   game_memory memory = {0};
@@ -678,6 +782,8 @@ int APIENTRY WinMain(HINSTANCE hInst, HINSTANCE hInstPrev, PSTR cmdline, int cmd
   long long int last_report_time = last_time_tick;
   long long int microseconds_spent_on_work_since_last_report = 0;
   long long int frames_since_last_report = 0;
+  long long int max_microseconds_spent = 0;
+  long long int min_microseconds_spent = 0;
 
   /* --- main loop --- */
   int retval = 0;
@@ -718,6 +824,7 @@ int APIENTRY WinMain(HINSTANCE hInst, HINSTANCE hInstPrev, PSTR cmdline, int cmd
 
     /* --- call the game code --- */
     {
+#ifndef OPENGL
       pixel_buffer pixels = {0};
       pixels.buffer = global_state.pixels.buffer;
       pixels.width = global_state.pixels.width;
@@ -725,10 +832,15 @@ int APIENTRY WinMain(HINSTANCE hInst, HINSTANCE hInstPrev, PSTR cmdline, int cmd
       pixels.bytesPerPixel = global_state.pixels.bytesPerPixel;
       pixels.stride = global_state.pixels.stride;
       pixels.size = global_state.pixels.size;
+#endif
 
       event* first_frame_event = game_input.events;
 
+#ifndef OPENGL
       game_main(&game_input, &pixels, &memory);
+#else
+      game_main(&game_input, &memory);
+#endif
 
       event_buffer.size_used -= (int)((ULONG_PTR)game_input.events - (ULONG_PTR)first_frame_event);
       event_buffer.read = game_input.events;
@@ -737,7 +849,13 @@ int APIENTRY WinMain(HINSTANCE hInst, HINSTANCE hInstPrev, PSTR cmdline, int cmd
     /* --- draw the buffer to the screen --- */
     {
       HDC hdc = GetDC(window);
+
+#ifndef OPENGL
       flip_buffers(hdc, global_state.resolution_x, global_state.resolution_y, &global_state.pixels);
+#endif
+
+      SwapBuffers(hdc);
+
       ReleaseDC(window, hdc);
     }
 
@@ -749,13 +867,15 @@ int APIENTRY WinMain(HINSTANCE hInst, HINSTANCE hInstPrev, PSTR cmdline, int cmd
       long long int frames_missed = microseconds_spent / target_frame_time_microseconds;
       microseconds_spent_on_work_since_last_report += microseconds_spent;
       frames_since_last_report++;
+      max_microseconds_spent = microseconds_spent > max_microseconds_spent ? microseconds_spent : max_microseconds_spent;
+      min_microseconds_spent = microseconds_spent < min_microseconds_spent || min_microseconds_spent == 0 ? microseconds_spent : min_microseconds_spent;
 
       DWORD milliseconds_to_sleep = (DWORD)((target_frame_time_microseconds - microseconds_spent % target_frame_time_microseconds) / 1000 / resolution_milliseconds * resolution_milliseconds);
-      Sleep(milliseconds_to_sleep);
+      //Sleep(milliseconds_to_sleep);
       long long int target_frame_end_tick = last_time_tick + (frames_missed + 1) * target_frame_time_microseconds * tick_frequency / 1000000;
-      do {
+      //do {
         current_time_tick = get_tick();
-      } while (current_time_tick < target_frame_end_tick);
+      //} while (current_time_tick < target_frame_end_tick);
       
       game_input.dt = (float)(current_time_tick - last_time_tick) / (float)tick_frequency;
       last_time_tick = current_time_tick;
@@ -767,12 +887,14 @@ int APIENTRY WinMain(HINSTANCE hInst, HINSTANCE hInstPrev, PSTR cmdline, int cmd
         float fps = (float)frames_since_last_report / (float)microseconds_since_report * 1000000.0f;
 
         char buffer[256];
-        snprintf(buffer, 256, "mus/frame = %lld;   fps = %lld\n", average_microseconds_per_frame, frames_since_last_report);
+        snprintf(buffer, 256, "mus/frame = %6lld;      min mus = %6lld;      max mus = %6lld;      fps = %lld\n", average_microseconds_per_frame, min_microseconds_spent, max_microseconds_spent, frames_since_last_report);
         OutputDebugStringA(buffer);
 
         last_report_time = current_time_tick;
         microseconds_spent_on_work_since_last_report = 0;
         frames_since_last_report = 0;
+        min_microseconds_spent = 0;
+        max_microseconds_spent = 0;
       }
 
       if (frames_missed > 0)
@@ -787,6 +909,7 @@ int APIENTRY WinMain(HINSTANCE hInst, HINSTANCE hInstPrev, PSTR cmdline, int cmd
 
   /* --- tidy up --- */
   timeEndPeriod((UINT)(resolution_milliseconds));
+  //wglDeleteContext(opengl_context);
   
   return retval;
 }

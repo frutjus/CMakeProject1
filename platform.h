@@ -6,6 +6,7 @@
                 Graphics
 * ------------------------------------- */
 
+#ifndef OPENGL
 typedef struct {
   void* buffer;
   int width; //in pixels
@@ -14,6 +15,7 @@ typedef struct {
   int stride; //in bytes
   int size; //in bytes
 } pixel_buffer;
+#endif
 
 /* ------------------------------------- *
                  Input
@@ -297,4 +299,8 @@ typedef struct {
                Game calls
 * ------------------------------------- */
 
+#ifndef OPENGL
 void game_main(Input *input, pixel_buffer* pixels, game_memory* memory);
+#else
+void game_main(Input *input, game_memory* memory);
+#endif
