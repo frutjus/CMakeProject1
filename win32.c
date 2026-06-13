@@ -583,6 +583,7 @@ void import_opengl_functions()
   glUniform1iv = (PFNGLUNIFORM1IVPROC)wglGetProcAddress("glUniform1iv");
   glBindBufferBase = (PFNGLBINDBUFFERBASEPROC)wglGetProcAddress("glBindBufferBase");
   glMemoryBarrier = (PFNGLMEMORYBARRIERPROC)wglGetProcAddress("glMemoryBarrier");
+  glUniform4f = (PFNGLUNIFORM4FPROC)wglGetProcAddress("glUniform4f");
 }
 
 
@@ -871,11 +872,11 @@ int APIENTRY WinMain(HINSTANCE hInst, HINSTANCE hInstPrev, PSTR cmdline, int cmd
       min_microseconds_spent = microseconds_spent < min_microseconds_spent || min_microseconds_spent == 0 ? microseconds_spent : min_microseconds_spent;
 
       DWORD milliseconds_to_sleep = (DWORD)((target_frame_time_microseconds - microseconds_spent % target_frame_time_microseconds) / 1000 / resolution_milliseconds * resolution_milliseconds);
-      //Sleep(milliseconds_to_sleep);
+      Sleep(milliseconds_to_sleep);
       long long int target_frame_end_tick = last_time_tick + (frames_missed + 1) * target_frame_time_microseconds * tick_frequency / 1000000;
-      //do {
+      do {
         current_time_tick = get_tick();
-      //} while (current_time_tick < target_frame_end_tick);
+      } while (current_time_tick < target_frame_end_tick);
       
       game_input.dt = (float)(current_time_tick - last_time_tick) / (float)tick_frequency;
       last_time_tick = current_time_tick;

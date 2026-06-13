@@ -1,6 +1,7 @@
 #include "platform.h"
 #include "opengl.h"
 #include "defs.h"
+#include "datatypes.h"
 
 // implementing Conway's Game of Life
 
@@ -11,18 +12,6 @@ int roundfi(float f)
 {
   return (int)(f + 0.5f);
 }
-
-typedef struct {
-  float x, y, w, h;
-} rectf;
-
-typedef struct {
-  int x, y, w, h;
-} recti;
-
-typedef struct {
-  float x, y;
-} vecf2;
 
 typedef enum {
   dead,
@@ -48,6 +37,8 @@ typedef struct {
     GLuint vs, fs, prog, vbo_coord2d, attr_coord2d, vbo_alive, attr_alive, ssbo;
     struct { vecf2 tl, tr1, bl1, bl2, tr2, br; } vertices[GRID_SIZE][GRID_SIZE];
   } gl;
+
+  gl_state gl_st;
 } game_state;
 #endif
 
@@ -219,13 +210,6 @@ const char fs_str[] =
 "  }"
 "}";
 
-#define CATCH_GL_ERROR(errstr)                             \
-for (GLenum err = glGetError(); err != GL_NO_ERROR; false) \
-{                                                          \
-  const char *errstr = gluErrorString(err);                \
-  ASSERT(0);                                               \
-}
-
 void init_graphics(game_state* state)
 {
   state->gl.vs = new_shader(GL_VERTEX_SHADER, vs_str);
@@ -251,8 +235,29 @@ void init_graphics(game_state* state)
 
   glBindBuffer(GL_ARRAY_BUFFER,state->gl.vbo_coord2d);
   glBufferData(GL_ARRAY_BUFFER, sizeof(state->gl.vertices), state->gl.vertices, GL_STATIC_DRAW);
-  CATCH_GL_ERROR(errstr);
+  CATCH_GL_ERROR(errstr);;
 
+  glGenBuffers(1, &state->gl.ssbo);
+  glBindBuffer(GL_SHADER_STORAGE_BUFFER, state->gl.ssbo);
+  glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, state->gl.ssbo);
+
+  init_graphics_generic(&state->gl_st);
+}
+
+void render_grid(game_state* state)
+{
+  glUseProgram(state->gl.prog);
+
+  glUniform2f(glGetUniformLocation(state->gl.prog, "camera"), state->camera.x, state->camera.y);
+  glUniform2f(glGetUniformLocation(state->gl.prog, "resolution"), state->resolution.x, state->resolution.y);
+  glUniform1f(glGetUniformLocation(state->gl.prog, "pixels_per_tile"), 5.0f);
+
+  glBufferData(GL_SHADER_STORAGE_BUFFER, GRID_SIZE * GRID_SIZE * sizeof(tile), state->grid, GL_DYNAMIC_COPY);
+  glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
+
+  glUniform1iv(glGetUniformLocation(state->gl.prog, "grid"), GRID_SIZE * GRID_SIZE, (const GLint*)state->grid);
+
+  glBindBuffer(GL_ARRAY_BUFFER,state->gl.vbo_coord2d);
   state->gl.attr_coord2d = glGetAttribLocation(state->gl.prog, "coord2d");
   CATCH_GL_ERROR(errstr);
 
@@ -266,60 +271,39 @@ void init_graphics(game_state* state)
   );
   CATCH_GL_ERROR(errstr);
 
-  /*glGenBuffers(1, &state->gl.vbo_alive);
-  CATCH_GL_ERROR(errstr);
-
-  glBindBuffer(GL_ARRAY_BUFFER,state->gl.vbo_alive);
-
-  state->gl.attr_alive = glGetAttribLocation(state->gl.prog, "alive");
-  CATCH_GL_ERROR(errstr);
-
-  glVertexAttribPointer(
-    state->gl.attr_alive,
-    1,
-    GL_UNSIGNED_INT,
-    GL_FALSE,
-    0,
-    0
-  );
-  CATCH_GL_ERROR(errstr);
-
-  glVertexAttribDivisor(state->gl.attr_alive, 0);
-  CATCH_GL_ERROR(errstr);*/
-
-  glGenBuffers(1, &state->gl.ssbo);
-  glBindBuffer(GL_SHADER_STORAGE_BUFFER, state->gl.ssbo);
-  glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, state->gl.ssbo);
-}
-
-void game_render(game_state* state)
-{
-  glUniform2f(glGetUniformLocation(state->gl.prog, "camera"), state->camera.x, state->camera.y);
-  glUniform2f(glGetUniformLocation(state->gl.prog, "resolution"), state->resolution.x, state->resolution.y);
-  glUniform1f(glGetUniformLocation(state->gl.prog, "pixels_per_tile"), 5.0f);
-
-  //glBufferData(GL_ARRAY_BUFFER, GRID_SIZE * GRID_SIZE * sizeof(tile), state->grid, GL_STATIC_DRAW);
-  //CATCH_GL_ERROR(errstr);
-
-  glBufferData(GL_SHADER_STORAGE_BUFFER, GRID_SIZE * GRID_SIZE * sizeof(tile), state->grid, GL_DYNAMIC_COPY);
-  glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
-
-  glUniform1iv(glGetUniformLocation(state->gl.prog, "grid"), GRID_SIZE * GRID_SIZE, (const GLint*)state->grid);
-
-  clear_background((colour){ 0.1f, 0.1f, 0.1f, 1.0f });
-  CATCH_GL_ERROR(errstr);
-
   glEnableVertexAttribArray(state->gl.attr_coord2d);
-  //glEnableVertexAttribArray(state->gl.attr_alive);
   CATCH_GL_ERROR(errstr);
 
   glDrawArrays(GL_TRIANGLES, 0, 6 * GRID_SIZE * GRID_SIZE);
   CATCH_GL_ERROR(errstr);
 
   glDisableVertexAttribArray(state->gl.attr_coord2d);
-  //glDisableVertexAttribArray(state->gl.attr_alive);
+  CATCH_GL_ERROR(errstr);
+}
+
+void render_pause_icon(gl_state* gl_st)
+{
+  float pause_icon_width = 20.0f;
+  float pause_icon_height = 20.0f;
+  float pause_icon_pos_x = gl_st->resolution.x - pause_icon_width - 10.0f;
+  float pause_icon_pos_y = gl_st->resolution.y - pause_icon_height - 10.0f;
+  rectf pause_l = {pause_icon_pos_x,      pause_icon_pos_y, 6.0f, 20.0f};
+  rectf pause_r = {pause_icon_pos_x + 14, pause_icon_pos_y, 6.0f, 20.0f};
+  draw_rectangle(gl_st, pause_l, (colour){1.0,1.0,1.0,1.0});
+  draw_rectangle(gl_st, pause_r, (colour){1.0,1.0,1.0,1.0});
+}
+
+void game_render(game_state* state)
+{
+  clear_background((colour){ 0.1f, 0.1f, 0.1f, 1.0f });
   CATCH_GL_ERROR(errstr);
 
+  render_grid(state);
+
+  if (state->paused)
+  {
+    render_pause_icon(&state->gl_st);
+  }
 }
 #endif
 
@@ -490,6 +474,8 @@ void game_update(Input *input, game_state* state)
 
   state->resolution.x = (float)input->window_resolution.x;
   state->resolution.y = (float)input->window_resolution.y;
+  state->gl_st.resolution.x = (float)input->window_resolution.x;
+  state->gl_st.resolution.y = (float)input->window_resolution.y;
 
   // simulate
 
