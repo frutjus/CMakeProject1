@@ -10,7 +10,7 @@ project("CMakeProject1")
 
 add_executable(CMakeProject1)
 
-target_sources(CMakeProject1 PRIVATE "game.c" "opengl.c")
+target_sources(CMakeProject1 PRIVATE "game.c" "opengl.c" "datatypes.c" )
 
 if(
   (CMAKE_CXX_COMPILER_ID STREQUAL "MSVC") OR

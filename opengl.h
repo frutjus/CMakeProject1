@@ -1,5 +1,8 @@
 #pragma once
 
+//#define WINGDIAPI __declspec(dllimport)
+//#define APIENTRY __stdcall
+
 #include "lib/gl.h"
 #include "lib/glext.h"
 #include "lib/glu.h"
@@ -42,12 +45,16 @@ extern PFNGLBINDBUFFERBASEPROC glBindBufferBase;
 extern PFNGLMEMORYBARRIERPROC glMemoryBarrier;
 extern PFNGLUNIFORM4FPROC glUniform4f;
 
+#ifdef DEBUG
 #define CATCH_GL_ERROR(errstr)                             \
 for (GLenum err = glGetError(); err != GL_NO_ERROR; false) \
 {                                                          \
   const char *errstr = gluErrorString(err);                \
   ASSERT(0);                                               \
 }
+#else
+#define CATCH_GL_ERROR(errstr)
+#endif
 
 typedef struct {
   float r,g,b,a;
@@ -55,7 +62,7 @@ typedef struct {
 
 typedef struct {
   GLuint prog_generic, vbo_coord2d, attr_coord2d;
-  vecf2 resolution;
+  vec2f resolution;
 } gl_state;
 
 GLuint new_shader(GLenum type, const char* source);

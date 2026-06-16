@@ -6,17 +6,6 @@
                 Graphics
 * ------------------------------------- */
 
-#ifndef OPENGL
-typedef struct {
-  void* buffer;
-  int width; //in pixels
-  int height; //in pixels
-  int bytesPerPixel;
-  int stride; //in bytes
-  int size; //in bytes
-} pixel_buffer;
-#endif
-
 /* ------------------------------------- *
                  Input
 * ------------------------------------- */
@@ -261,22 +250,34 @@ typedef enum {
 typedef struct {
   event_type t;
   union {
-    Key k;
+    struct {
+      Key k;
+      struct {
+        int x;
+        int y;
+      } mouse;
+      bool control, shift, alt;
+    };
   };
 } event;
+
+#define MAX_EVENTS 2
 
 typedef struct {
   struct {
     bool isdown;
   } keys[KEY_COUNT];
 
-  event* events;
+  event events[MAX_EVENTS];
   int events_count;
 
   struct {
     int x;
     int y;
   } mouse;
+
+  int mousewheel_delta;
+  int mousewheelh_delta;
 
   float dt;
 
@@ -299,8 +300,4 @@ typedef struct {
                Game calls
 * ------------------------------------- */
 
-#ifndef OPENGL
-void game_main(Input *input, pixel_buffer* pixels, game_memory* memory);
-#else
 void game_main(Input *input, game_memory* memory);
-#endif

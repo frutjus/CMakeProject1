@@ -3,10 +3,11 @@
 #include "defs.h"
 #include "datatypes.h"
 
+#include <math.h>
+
 // implementing Conway's Game of Life
 
 #define GRID_SIZE 200
-#define VIEWPORT_SIZE 540
 
 int roundfi(float f)
 {
@@ -18,16 +19,15 @@ typedef enum {
   alive,
 } tile;
 
-#ifdef OPENGL
 typedef struct {
   bool is_initialised;
 
-  tile* grid;
-  tile grids[2][GRID_SIZE][GRID_SIZE];
-  int grid_index;
+  tile *grid, *newgrid;
+  tile grids[2 * GRID_SIZE * GRID_SIZE];
 
-  vecf2 camera;
-  vecf2 resolution;
+  vec2f camera;
+  vec2f resolution;
+  vec2f mouse;
 
   float time_since_last_update;
 
@@ -35,155 +35,49 @@ typedef struct {
 
   struct {
     GLuint vs, fs, prog, vbo_coord2d, attr_coord2d, vbo_alive, attr_alive, ssbo;
-    struct { vecf2 tl, tr1, bl1, bl2, tr2, br; } vertices[GRID_SIZE][GRID_SIZE];
+    struct { vec2f tl, tr1, bl1, bl2, tr2, br; } vertices[GRID_SIZE][GRID_SIZE];
   } gl;
 
   gl_state gl_st;
+
+  bool debug_break;
+
+  bool dragging;
+  vec2f last_drag_pos;
+
+  float pixels_per_tile;
 } game_state;
-#endif
 
-#ifndef OPENGL
-typedef union {
-  struct {
-    unsigned char b, g, r, a;
+tile* tile_at(tile* grid, int x, int y)
+{
+  return grid + y*GRID_SIZE + x;
+}
+
+bool in_bounds(vec2i t)
+{
+  return t.x >= 0 && t.y >= 0 && t.x < GRID_SIZE && t.y < GRID_SIZE;
+}
+
+vec2i tile_at_pixel(vec2f p, vec2f camera, float pixels_per_tile)
+{
+  return vec2f_to_veci2(add_vec2f(camera, divide_vec2f(p, pixels_per_tile)));
+}
+
+rectf pixels_for_tile(vec2i t, vec2f camera, float pixels_per_tile)
+{
+  vec2f coords = multiply_vec2f(subtract_vec2f(vec2i_to_vec2f(t), camera), pixels_per_tile);
+  rectf tile_area = {
+    coords.x,
+    coords.y,
+    pixels_per_tile,
+    pixels_per_tile,
   };
-  unsigned int v;
-} pixel;
-
-#define RGB(r,g,b) ((pixel){.v=(((unsigned int)((r) * 255.0f) << 16) + ((unsigned int)((g) * 255.0f) << 8) + (unsigned int)((b) * 255.0f))})
-// for some reason the below is much slower than the above method
-//#define RGB(r1,g1,b1) ((pixel){ \
-//  .r=(unsigned char)((r1) * 255.0f), \
-//  .g=(unsigned char)((g1) * 255.0f), \
-//  .b=(unsigned char)((b1) * 255.0f), \
-//  .a=255})
-
-typedef struct {
-  pixel* pixels;
-  int width;
-  int height;
-  int stride;
-} window;
-
-pixel* pixel_at(window* win, int x, int y)
-{
-  return win->pixels + y * win->stride + x;
+  return tile_area;
 }
 
-window div(window* w, recti r)
-{
-  window newwin = *w;
-
-  newwin.pixels = pixel_at(w, r.x, r.y);
-  newwin.width = r.w;
-  newwin.height = r.h;
-
-  return newwin;
-}
-
-window window_from_pixel_buffer(pixel_buffer* pixels)
-{
-  window newwin;
-  newwin.pixels = (pixel*)pixels->buffer;
-  newwin.width = pixels->width;
-  newwin.height = pixels->height;
-  newwin.stride = pixels->stride / pixels->bytesPerPixel;
-  return newwin;
-}
-
-void draw_rectangle(window* win, rectf r, pixel c)
-{
-  int minx = roundfi(r.x);
-  int miny = roundfi(r.y);
-  int maxx = roundfi(r.x + r.w);
-  int maxy = roundfi(r.y + r.h);
-
-  if (minx < 0)
-  {
-    minx = 0;
-  }
-  if (miny < 0)
-  {
-    miny = 0;
-  }
-  if (maxx > win->width)
-  {
-    maxx = win->width;
-  }
-  if (maxy > win->height)
-  {
-    maxy = win->height;
-  }
-
-  for (int y = miny; y < maxy; y++)
-  {
-    for (int x = minx; x < maxx; x++)
-    {
-      *pixel_at(win, x, y) = c;
-    }
-  }
-}
-
-void clear_background(window* win, pixel c)
-{
-  draw_rectangle(win, (rectf){ .x = 0.0f, .y = 0.0f, .w = (float)win->width, .h = (float)win->height }, c);
-}
-
-void render_grid(window* win, vecf2 camera, game_state* state)
-{
-  float pixels_per_tile = (float)VIEWPORT_SIZE / (float)GRID_SIZE * 2.0f;
-
-  for (int tile_y = 0; tile_y < GRID_SIZE; tile_y++)
-  {
-    for (int tile_x = 0; tile_x < GRID_SIZE; tile_x++)
-    {
-      pixel p;
-
-      if (is_alive(state->grid, tile_y, tile_x))
-      {
-        p = RGB(220.0f/255.0f, 191.0f/255.0f, 1.0f/255.0f);
-      }
-      else
-      {
-        p = RGB(88.0f/255.0f, 57.0f/255.0f, 39.0f/255.0f);
-      }
-
-      rectf r = {
-        .x = (float)tile_x * pixels_per_tile - camera.x,
-        .y = (float)tile_y * pixels_per_tile - camera.y,
-        .w = (float)pixels_per_tile,
-        .h = (float)pixels_per_tile,
-      };
-
-      draw_rectangle(win, r, p);
-    }
-  }
-}
-
-void render_pause_icon(window* win)
-{
-  int pause_icon_width = 20;
-  int pause_icon_height = 20;
-  int pause_icon_pos_x = win->width - pause_icon_width - 10;
-  int pause_icon_pos_y = 10;
-  rectf pause_l = {(float)pause_icon_pos_x, (float)pause_icon_pos_y, (float)6, (float)20};
-  rectf pause_r = {(float)pause_icon_pos_x + 14, (float)pause_icon_pos_y, (float)6, (float)20};
-  draw_rectangle(win, pause_l, RGB(1.0,1.0,1.0));
-  draw_rectangle(win, pause_r, RGB(1.0,1.0,1.0));
-}
-
-void game_render(pixel_buffer* pixels, game_state* state)
-{
-  clear_background(&state->main_window, RGB(0.1, 0.1, 0.1));
-
-  render_grid(&state->main_window, state->camera, state);
-
-  if (state->paused)
-  {
-    render_pause_icon(&state->main_window);
-  }
-}
-#else
+/* ------------------------------------- *
+                Graphics
+* ------------------------------------- */
 
 const char vs_str[] =
 "#version 430 core\n"
@@ -223,11 +117,10 @@ void init_graphics(game_state* state)
   {
     for (int j = 0; j < GRID_SIZE; j++)
     {
-      int k = GRID_SIZE - i;
-      state->gl.vertices[i][j].tl  = (vecf2){ (float)(j)  , (float)(k)   };
-      state->gl.vertices[i][j].tr1 = (vecf2){ (float)(j+1), (float)(k)   };
-      state->gl.vertices[i][j].bl1 = (vecf2){ (float)(j)  , (float)(k-1) };
-      state->gl.vertices[i][j].br  = (vecf2){ (float)(j+1), (float)(k-1) };
+      state->gl.vertices[i][j].tl  = (vec2f){ (float)(j)  , (float)(i)   };
+      state->gl.vertices[i][j].tr1 = (vec2f){ (float)(j+1), (float)(i)   };
+      state->gl.vertices[i][j].bl1 = (vec2f){ (float)(j)  , (float)(i+1) };
+      state->gl.vertices[i][j].br  = (vec2f){ (float)(j+1), (float)(i+1) };
       state->gl.vertices[i][j].bl2 = state->gl.vertices[i][j].bl1;
       state->gl.vertices[i][j].tr2 = state->gl.vertices[i][j].tr1;
     }
@@ -250,7 +143,7 @@ void render_grid(game_state* state)
 
   glUniform2f(glGetUniformLocation(state->gl.prog, "camera"), state->camera.x, state->camera.y);
   glUniform2f(glGetUniformLocation(state->gl.prog, "resolution"), state->resolution.x, state->resolution.y);
-  glUniform1f(glGetUniformLocation(state->gl.prog, "pixels_per_tile"), 5.0f);
+  glUniform1f(glGetUniformLocation(state->gl.prog, "pixels_per_tile"), state->pixels_per_tile);
 
   glBufferData(GL_SHADER_STORAGE_BUFFER, GRID_SIZE * GRID_SIZE * sizeof(tile), state->grid, GL_DYNAMIC_COPY);
   glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
@@ -289,8 +182,37 @@ void render_pause_icon(gl_state* gl_st)
   float pause_icon_pos_y = gl_st->resolution.y - pause_icon_height - 10.0f;
   rectf pause_l = {pause_icon_pos_x,      pause_icon_pos_y, 6.0f, 20.0f};
   rectf pause_r = {pause_icon_pos_x + 14, pause_icon_pos_y, 6.0f, 20.0f};
-  draw_rectangle(gl_st, pause_l, (colour){1.0,1.0,1.0,1.0});
-  draw_rectangle(gl_st, pause_r, (colour){1.0,1.0,1.0,1.0});
+  draw_rectangle(gl_st, pause_l, (colour){ 1.0f, 1.0f, 1.0f, 1.0f });
+  draw_rectangle(gl_st, pause_r, (colour){ 1.0f, 1.0f, 1.0f, 1.0f });
+}
+
+void render_mouse_tile(game_state* state)
+{
+  if (state->debug_break)
+    state->debug_break = false;
+  
+  vec2i tpos = tile_at_pixel(state->mouse, state->camera, state->pixels_per_tile);
+
+  if (in_bounds(tpos))
+  {
+    rectf rec = pixels_for_tile(tpos, state->camera, state->pixels_per_tile);
+
+    draw_rectangle(&state->gl_st, rec, (colour){ 0.8f, 0.8f, 0.8f, 0.8f });
+  }
+}
+
+void render_mouse(game_state* state)
+{
+  if (state->debug_break)
+    state->debug_break = false;
+
+  rectf tile_area = {
+    state->mouse.x - 2.5f,
+    state->mouse.y - 2.5f,
+    state->pixels_per_tile,
+    state->pixels_per_tile,
+  };
+  draw_rectangle(&state->gl_st, tile_area, (colour){ 0.8f, 0.8f, 0.8f, 0.8f });
 }
 
 void game_render(game_state* state)
@@ -300,53 +222,31 @@ void game_render(game_state* state)
 
   render_grid(state);
 
+  render_mouse_tile(state);
+
   if (state->paused)
   {
     render_pause_icon(&state->gl_st);
   }
 }
-#endif
 
-#ifndef OPENGL
-typedef struct {
-  bool is_initialised;
+/* ------------------------------------- *
+            Initialisation
+* ------------------------------------- */
 
-  tile* grid;
-  tile grids[2][GRID_SIZE][GRID_SIZE];
-  int grid_index;
-
-  window main_window;
-  window viewport;
-
-  vecf2 camera;
-
-  float time_since_last_update;
-
-  bool paused;
-} game_state;
-#endif
-
-#ifndef OPENGL
-void game_init(game_memory* memory, pixel_buffer* pixels)
-#else
 void game_init(game_memory* memory)
-#endif
 {
   ASSERT(sizeof(game_state) <= memory->size)
   game_state *state = (game_state*)memory->buffer;
 
-#ifndef OPENGL
-  state->main_window = window_from_pixel_buffer(pixels);
-#endif
-
-  state->grid_index = 0;
-  state->grid = state->grids[state->grid_index];
+  state->grid = state->grids;
+  state->newgrid = state->grids + GRID_SIZE*GRID_SIZE;
 
   for (int i = 0; i < GRID_SIZE; i++)
   {
     for (int j = 0; j < GRID_SIZE; j++)
     {
-      state->grid[i * GRID_SIZE + j] = dead;
+      *tile_at(state->grid, j, i) = dead;
     }
   }
 
@@ -385,7 +285,7 @@ void game_init(game_memory* memory)
   {
     for (int j = 0; j < glider_gun_width; j++)
     {
-      state->grid[(i+40) * GRID_SIZE + j+2] = glider_gun[i][j];
+      *tile_at(state->grid, j + 2, GRID_SIZE - i - 7) = glider_gun[i][j];
     }
   }
 
@@ -395,18 +295,24 @@ void game_init(game_memory* memory)
   state->grid[3][2] = alive;
   state->grid[3][3] = alive;*/
 
-  //state->viewport = div(&state->main_window, (recti){ .x = 0, .y = 0, .w = VIEWPORT_SIZE, .h = VIEWPORT_SIZE });
-
-  state->camera = (vecf2){0.0f, 0.0f};
+  state->camera = (vec2f){ 0.0f, 0.0f };
 
   state->time_since_last_update = 0.0f;
 
   state->paused = true;
 
+  state->debug_break = false;
+
+  state->pixels_per_tile = 5.0f;
+
   state->is_initialised = true;
 }
 
-bool is_alive(tile grid[GRID_SIZE][GRID_SIZE], int i, int j)
+/* ------------------------------------- *
+               Updating
+* ------------------------------------- */
+
+bool is_alive(tile* grid, int i, int j)
 {
   if (false)
   {
@@ -433,21 +339,21 @@ bool is_alive(tile grid[GRID_SIZE][GRID_SIZE], int i, int j)
     j = (j + GRID_SIZE) % GRID_SIZE;
   }
 
-  return grid[i][j] == alive;
+  return *tile_at(grid, j, i) == alive;
 }
 
 void game_update(Input *input, game_state* state)
 {
   // handle input
 
-  event* e = input->events;
   for (int i = 0; i < input->events_count; i++)
   {
-    switch (e->t)
+    event e = input->events[i];
+    switch (e.t)
     {
     case EVENT_KEYPRESS:
     {
-      switch (e->k)
+      switch (e.k)
       {
       case KEY_P:
         state->paused = !state->paused;
@@ -455,27 +361,53 @@ void game_update(Input *input, game_state* state)
       case KEY_R:
         state->is_initialised = false;
         break;
+      case KEY_B:
+        state->debug_break = true;
+        break;
+      case KEY_MOUSEL:
+      {
+        vec2f mouse = { (float)e.mouse.x, (float)e.mouse.y };
+        vec2i tpos = tile_at_pixel(mouse, state->camera, state->pixels_per_tile);
+        if (in_bounds(tpos))
+        {
+          *tile_at(state->grid, tpos.x, tpos.y) ^= alive;
+        }
+      } break;
       }
     } break;
     }
-
-    e++;
   }
-  input->events = e;
 
-  if (input->keys[KEY_UP].isdown)
-    state->camera.y += 1.5f;
-  if (input->keys[KEY_DOWN].isdown)
-    state->camera.y -= 1.5f;
-  if (input->keys[KEY_RIGHT].isdown)
-    state->camera.x += 1.5f;
-  if (input->keys[KEY_LEFT].isdown)
-    state->camera.x -= 1.5f;
+  state->mouse.x = (float)input->mouse.x;
+  state->mouse.y = (float)input->mouse.y;
+
+  if (input->keys[KEY_MOUSER].isdown)
+    state->dragging = true;
+  else
+    state->dragging = false;
+
+  if (state->dragging)
+  {
+    state->camera = subtract_vec2f(state->camera, divide_vec2f(subtract_vec2f(state->mouse, state->last_drag_pos), state->pixels_per_tile));
+  }
+  else
+  {
+    if (input->keys[KEY_UP].isdown)
+      state->camera.y += 1.5f;
+    if (input->keys[KEY_DOWN].isdown)
+      state->camera.y -= 1.5f;
+    if (input->keys[KEY_RIGHT].isdown)
+      state->camera.x += 1.5f;
+    if (input->keys[KEY_LEFT].isdown)
+      state->camera.x -= 1.5f;
+  }
+  state->last_drag_pos = state->mouse;
+
+  state->pixels_per_tile *= expf((float)input->mousewheel_delta / 960.f);
 
   state->resolution.x = (float)input->window_resolution.x;
   state->resolution.y = (float)input->window_resolution.y;
-  state->gl_st.resolution.x = (float)input->window_resolution.x;
-  state->gl_st.resolution.y = (float)input->window_resolution.y;
+  state->gl_st.resolution = state->resolution;
 
   // simulate
 
@@ -488,13 +420,13 @@ void game_update(Input *input, game_state* state)
 
   if (should_update)
   {
-    tile* new_grid = state->grids[(state->grid_index + 1) % 2];
+    tile* newgrid = state->newgrid;
 
     for (int i = 0; i < GRID_SIZE; i++)
     {
       for (int j = 0; j < GRID_SIZE; j++)
       {
-        tile old_tile = state->grid[i * GRID_SIZE + j];
+        tile old_tile = *tile_at(state->grid, j, i);
 
         int neighbour_count = 0;
 
@@ -534,32 +466,25 @@ void game_update(Input *input, game_state* state)
           }
         }
 
-        new_grid[i * GRID_SIZE + j] = new_tile;
+        *tile_at(newgrid, j, i) = new_tile;
       }
     }
 
-    state->grid_index = (state->grid_index + 1) % 2;
-    state->grid = new_grid;
+    // swop grids
+    {
+      tile* tmp = state->grid;
+      state->grid = newgrid;
+      state->newgrid = tmp;
+    }
 
     state->time_since_last_update = 0.0f;
   }
 }
 
-#ifndef OPENGL
-void game_main(Input *input, pixel_buffer* pixels, game_memory* memory)
-{
-  game_state *state = (game_state*)memory->buffer;
+/* ------------------------------------- *
+                 Main
+* ------------------------------------- */
 
-  if (!state->is_initialised)
-  {
-    game_init(memory, pixels);
-  }
-
-  game_update(input, state);
-
-  game_render(pixels, state);
-}
-#else
 void game_main(Input *input, game_memory* memory)
 {
   game_state *state = (game_state*)memory->buffer;
@@ -575,4 +500,3 @@ void game_main(Input *input, game_memory* memory)
 
   game_render(state);
 }
-#endif
