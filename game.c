@@ -1,7 +1,8 @@
 #include "platform.h"
-#include "opengl.h"
+#include "graphics.h"
 #include "defs.h"
 #include "datatypes.h"
+#include "allocator.h"
 
 #include <math.h>
 
@@ -33,11 +34,6 @@ typedef struct {
 
   bool paused;
 
-  struct {
-    GLuint vs, fs, prog, vbo_coord2d, attr_coord2d, vbo_alive, attr_alive, ssbo;
-    struct { vec2f tl, tr1, bl1, bl2, tr2, br; } vertices[GRID_SIZE][GRID_SIZE];
-  } gl;
-
   gl_state gl_st;
 
   bool debug_break;
@@ -46,6 +42,8 @@ typedef struct {
   vec2f last_drag_pos;
 
   float pixels_per_tile;
+
+  allocator allctr;
 } game_state;
 
 tile* tile_at(tile* grid, int x, int y)
@@ -58,14 +56,21 @@ bool in_bounds(vec2i t)
   return t.x >= 0 && t.y >= 0 && t.x < GRID_SIZE && t.y < GRID_SIZE;
 }
 
-vec2i tile_at_pixel(vec2f p, vec2f camera, float pixels_per_tile)
+vec2f origin_for_camera(vec2f camera, vec2f resolution, float pixels_per_tile)
 {
-  return vec2f_to_veci2(add_vec2f(camera, divide_vec2f(p, pixels_per_tile)));
+  return subtract_vec2f(camera, divide_vec2f(divide_vec2f(resolution, 2.0f), pixels_per_tile));
 }
 
-rectf pixels_for_tile(vec2i t, vec2f camera, float pixels_per_tile)
+vec2i tile_at_pixel(vec2f p, vec2f camera, vec2f resolution, float pixels_per_tile)
 {
-  vec2f coords = multiply_vec2f(subtract_vec2f(vec2i_to_vec2f(t), camera), pixels_per_tile);
+  vec2f transform = add_vec2f(origin_for_camera(camera, resolution, pixels_per_tile), divide_vec2f(p, pixels_per_tile));
+  vec2i fixup = { transform.x < 0.0 ? -1 : 0, transform.y < 0.0 ? -1 : 0 };
+  return add_vec2i(vec2f_to_veci2(transform), fixup);
+}
+
+rectf pixels_for_tile(vec2i t, vec2f camera, vec2f resolution, float pixels_per_tile)
+{
+  vec2f coords = multiply_vec2f(subtract_vec2f(vec2i_to_vec2f(t), origin_for_camera(camera, resolution, pixels_per_tile)), pixels_per_tile);
   rectf tile_area = {
     coords.x,
     coords.y,
@@ -79,123 +84,13 @@ rectf pixels_for_tile(vec2i t, vec2f camera, float pixels_per_tile)
                 Graphics
 * ------------------------------------- */
 
-const char vs_str[] =
-"#version 430 core\n"
-"in vec2 coord2d;"
-"uniform vec2 camera;"
-"uniform vec2 resolution;"
-"uniform float pixels_per_tile;"
-"void main(void) {"
-"  gl_Position = vec4((coord2d - camera)*pixels_per_tile/resolution*2.0-1.0, 0.0, 1.0);"
-"}";
-
-const char fs_str[] =
-"#version 430 core\n"
-"layout(std430, binding = 0) buffer ssbo {"
-"  int grid[];"
-"};"
-"out vec4 fragColor;"
-"void main(void) {"
-"  int alive = grid[gl_PrimitiveID/2];"
-"  if (alive == 1) {"
-"    fragColor = vec4(220.0f/255.0f, 191.0f/255.0f, 1.0f/255.0f, 1.0);"
-"  } else {"
-"    fragColor = vec4(88.0f/255.0f, 57.0f/255.0f, 39.0f/255.0f, 1.0);"
-"  }"
-"}";
-
-void init_graphics(game_state* state)
-{
-  state->gl.vs = new_shader(GL_VERTEX_SHADER, vs_str);
-  state->gl.fs = new_shader(GL_FRAGMENT_SHADER, fs_str);
-  state->gl.prog = new_shader_program(state->gl.vs, state->gl.fs);
-
-  glGenBuffers(1, &state->gl.vbo_coord2d);
-  CATCH_GL_ERROR(errstr);
-
-  for (int i = 0; i < GRID_SIZE; i++)
-  {
-    for (int j = 0; j < GRID_SIZE; j++)
-    {
-      state->gl.vertices[i][j].tl  = (vec2f){ (float)(j)  , (float)(i)   };
-      state->gl.vertices[i][j].tr1 = (vec2f){ (float)(j+1), (float)(i)   };
-      state->gl.vertices[i][j].bl1 = (vec2f){ (float)(j)  , (float)(i+1) };
-      state->gl.vertices[i][j].br  = (vec2f){ (float)(j+1), (float)(i+1) };
-      state->gl.vertices[i][j].bl2 = state->gl.vertices[i][j].bl1;
-      state->gl.vertices[i][j].tr2 = state->gl.vertices[i][j].tr1;
-    }
-  }
-
-  glBindBuffer(GL_ARRAY_BUFFER,state->gl.vbo_coord2d);
-  glBufferData(GL_ARRAY_BUFFER, sizeof(state->gl.vertices), state->gl.vertices, GL_STATIC_DRAW);
-  CATCH_GL_ERROR(errstr);;
-
-  glGenBuffers(1, &state->gl.ssbo);
-  glBindBuffer(GL_SHADER_STORAGE_BUFFER, state->gl.ssbo);
-  glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, state->gl.ssbo);
-
-  init_graphics_generic(&state->gl_st);
-}
-
-void render_grid(game_state* state)
-{
-  glUseProgram(state->gl.prog);
-
-  glUniform2f(glGetUniformLocation(state->gl.prog, "camera"), state->camera.x, state->camera.y);
-  glUniform2f(glGetUniformLocation(state->gl.prog, "resolution"), state->resolution.x, state->resolution.y);
-  glUniform1f(glGetUniformLocation(state->gl.prog, "pixels_per_tile"), state->pixels_per_tile);
-
-  glBufferData(GL_SHADER_STORAGE_BUFFER, GRID_SIZE * GRID_SIZE * sizeof(tile), state->grid, GL_DYNAMIC_COPY);
-  glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
-
-  glUniform1iv(glGetUniformLocation(state->gl.prog, "grid"), GRID_SIZE * GRID_SIZE, (const GLint*)state->grid);
-
-  glBindBuffer(GL_ARRAY_BUFFER,state->gl.vbo_coord2d);
-  state->gl.attr_coord2d = glGetAttribLocation(state->gl.prog, "coord2d");
-  CATCH_GL_ERROR(errstr);
-
-  glVertexAttribPointer(
-    state->gl.attr_coord2d,  // attribute
-    2,                  // number of elements per vertex; here (x,y)
-    GL_FLOAT,           // type of each element
-    GL_FALSE,           // take our values as-is
-    0,                  // no extra data between each position
-    0                   // offset of first element    
-  );
-  CATCH_GL_ERROR(errstr);
-
-  glEnableVertexAttribArray(state->gl.attr_coord2d);
-  CATCH_GL_ERROR(errstr);
-
-  glDrawArrays(GL_TRIANGLES, 0, 6 * GRID_SIZE * GRID_SIZE);
-  CATCH_GL_ERROR(errstr);
-
-  glDisableVertexAttribArray(state->gl.attr_coord2d);
-  CATCH_GL_ERROR(errstr);
-}
-
-void render_pause_icon(gl_state* gl_st)
-{
-  float pause_icon_width = 20.0f;
-  float pause_icon_height = 20.0f;
-  float pause_icon_pos_x = gl_st->resolution.x - pause_icon_width - 10.0f;
-  float pause_icon_pos_y = gl_st->resolution.y - pause_icon_height - 10.0f;
-  rectf pause_l = {pause_icon_pos_x,      pause_icon_pos_y, 6.0f, 20.0f};
-  rectf pause_r = {pause_icon_pos_x + 14, pause_icon_pos_y, 6.0f, 20.0f};
-  draw_rectangle(gl_st, pause_l, (colour){ 1.0f, 1.0f, 1.0f, 1.0f });
-  draw_rectangle(gl_st, pause_r, (colour){ 1.0f, 1.0f, 1.0f, 1.0f });
-}
-
 void render_mouse_tile(game_state* state)
 {
-  if (state->debug_break)
-    state->debug_break = false;
-  
-  vec2i tpos = tile_at_pixel(state->mouse, state->camera, state->pixels_per_tile);
+  vec2i tpos = tile_at_pixel(state->mouse, state->camera, state->resolution, state->pixels_per_tile);
 
   if (in_bounds(tpos))
   {
-    rectf rec = pixels_for_tile(tpos, state->camera, state->pixels_per_tile);
+    rectf rec = pixels_for_tile(tpos, state->camera, state->resolution, state->pixels_per_tile);
 
     draw_rectangle(&state->gl_st, rec, (colour){ 0.8f, 0.8f, 0.8f, 0.8f });
   }
@@ -203,24 +98,25 @@ void render_mouse_tile(game_state* state)
 
 void render_mouse(game_state* state)
 {
-  if (state->debug_break)
-    state->debug_break = false;
-
   rectf tile_area = {
     state->mouse.x - 2.5f,
     state->mouse.y - 2.5f,
     state->pixels_per_tile,
     state->pixels_per_tile,
   };
-  draw_rectangle(&state->gl_st, tile_area, (colour){ 0.8f, 0.8f, 0.8f, 0.8f });
+  draw_rectangle(&state->gl_st, tile_area, (colour){ 0.8f, 0.8f, 0.8f, 0.5f });
 }
 
 void game_render(game_state* state)
 {
   clear_background((colour){ 0.1f, 0.1f, 0.1f, 1.0f });
-  CATCH_GL_ERROR(errstr);
 
-  render_grid(state);
+  render_grid(&state->gl_st, (int*)state->grid, GRID_SIZE);
+
+  if (state->pixels_per_tile > 20.0f)
+  {
+    render_grid_borders(&state->gl_st, GRID_SIZE);
+  }
 
   render_mouse_tile(state);
 
@@ -295,7 +191,9 @@ void game_init(game_memory* memory)
   state->grid[3][2] = alive;
   state->grid[3][3] = alive;*/
 
-  state->camera = (vec2f){ 0.0f, 0.0f };
+  state->camera = (vec2f){ (float)GRID_SIZE / 2.0f, (float)GRID_SIZE / 2.0f};
+
+  state->resolution = (vec2f){ 1.0f, 1.0f };
 
   state->time_since_last_update = 0.0f;
 
@@ -304,6 +202,9 @@ void game_init(game_memory* memory)
   state->debug_break = false;
 
   state->pixels_per_tile = 5.0f;
+
+  state->allctr.head = (char*)memory->buffer + sizeof(game_state);
+  state->allctr.space = memory->size - sizeof(game_state);
 
   state->is_initialised = true;
 }
@@ -345,6 +246,7 @@ bool is_alive(tile* grid, int i, int j)
 void game_update(Input *input, game_state* state)
 {
   // handle input
+  bool step_once = false;
 
   for (int i = 0; i < input->events_count; i++)
   {
@@ -364,10 +266,13 @@ void game_update(Input *input, game_state* state)
       case KEY_B:
         state->debug_break = true;
         break;
+      case KEY_S:
+        step_once = true;
+        break;
       case KEY_MOUSEL:
       {
         vec2f mouse = { (float)e.mouse.x, (float)e.mouse.y };
-        vec2i tpos = tile_at_pixel(mouse, state->camera, state->pixels_per_tile);
+        vec2i tpos = tile_at_pixel(mouse, state->camera, state->resolution, state->pixels_per_tile);
         if (in_bounds(tpos))
         {
           *tile_at(state->grid, tpos.x, tpos.y) ^= alive;
@@ -405,9 +310,20 @@ void game_update(Input *input, game_state* state)
 
   state->pixels_per_tile *= expf((float)input->mousewheel_delta / 960.f);
 
-  state->resolution.x = (float)input->window_resolution.x;
-  state->resolution.y = (float)input->window_resolution.y;
+  {
+    vec2f newres = (vec2f){(float)input->window_resolution.x, (float)input->window_resolution.y};
+
+    /*if (state->resolution.x == 1.0f)
+    {
+      state->camera = add_vec2f(state->camera, divide_vec2f(subtract_vec2f(newres, state->resolution), state->pixels_per_tile * 2.0f));
+    }*/
+
+    state->resolution = newres;
+  }
+
   state->gl_st.resolution = state->resolution;
+  state->gl_st.camera = state->camera;
+  state->gl_st.pixels_per_tile = state->pixels_per_tile;
 
   // simulate
 
@@ -416,7 +332,7 @@ void game_update(Input *input, game_state* state)
 
   state->time_since_last_update += input->dt;
 
-  bool should_update = !state->paused;// && state->time_since_last_update >= update_time;
+  bool should_update = !state->paused || step_once;// && state->time_since_last_update >= update_time;
 
   if (should_update)
   {
@@ -493,7 +409,7 @@ void game_main(Input *input, game_memory* memory)
   {
     game_init(memory);
 
-    init_graphics(state);
+    init_graphics(&state->gl_st, state->allctr, GRID_SIZE);
   }
 
   game_update(input, state);

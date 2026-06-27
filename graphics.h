@@ -8,6 +8,7 @@
 #include "lib/glu.h"
 #include "defs.h"
 #include "datatypes.h"
+#include "allocator.h"
 
 extern PFNGLCREATESHADERPROC glCreateShader;
 extern PFNGLSHADERSOURCEPROC glShaderSource;
@@ -44,6 +45,8 @@ extern PFNGLUNIFORM1IVPROC glUniform1iv;
 extern PFNGLBINDBUFFERBASEPROC glBindBufferBase;
 extern PFNGLMEMORYBARRIERPROC glMemoryBarrier;
 extern PFNGLUNIFORM4FPROC glUniform4f;
+extern PFNGLGENVERTEXARRAYSPROC glGenVertexArrays;
+extern PFNGLBINDVERTEXARRAYPROC glBindVertexArray;
 
 #ifdef DEBUG
 #define CATCH_GL_ERROR(errstr)                             \
@@ -60,9 +63,36 @@ typedef struct {
   float r,g,b,a;
 } colour;
 
+//typedef struct {
+//  GLuint vao;
+//  GLuint prog;
+//} renderer;
+
 typedef struct {
-  GLuint prog_generic, vbo_coord2d, attr_coord2d;
+  // shader programs
+  GLuint prog_cells, prog_borders, prog_rect;
+  // buffer objects
+  union {
+    GLuint buffers;
+    struct {
+      GLuint
+        vbo_grid, vbo_rect,
+        ebo_cells, ebo_borders,
+        ssbo;
+    };
+  };
+  // state objects
+  union {
+    GLuint vertex_arrays;
+    struct {
+      GLuint
+        vao_cells, vao_borders, vao_rect;
+    };
+  };
+  // parameters
+  vec2f camera;
   vec2f resolution;
+  float pixels_per_tile;
 } gl_state;
 
 GLuint new_shader(GLenum type, const char* source);
@@ -71,6 +101,12 @@ GLuint new_shader_program(GLuint vertex, GLuint fragment);
 
 void clear_background(colour c);
 
-void init_graphics_generic(gl_state* state);
+void init_graphics(gl_state* state, allocator scratch, int grid_size);
+
+void render_grid(gl_state* state, int* grid, int grid_size);
+
+void render_grid_borders(gl_state* state, int grid_size);
+
+void render_pause_icon(gl_state* gl_st);
 
 void draw_rectangle(gl_state* state, rectf r, colour c);

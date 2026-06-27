@@ -1,6 +1,6 @@
 ﻿#include "platform.h"
 #include "defs.h"
-#include "opengl.h"
+#include "graphics.h"
 #include "lib/gl.h"
 #include "lib/glext.h"
 
@@ -424,6 +424,8 @@ for (type* var = (type*)(buf)->write; \
   (buf)->size_used += sizeof(type) \
 )
 
+#define WGL_IMPORT(type, fun) fun = (type)wglGetProcAddress(fun)
+
 INTERNAL
 void import_opengl_functions()
 {
@@ -462,6 +464,8 @@ void import_opengl_functions()
   glBindBufferBase = (PFNGLBINDBUFFERBASEPROC)wglGetProcAddress("glBindBufferBase");
   glMemoryBarrier = (PFNGLMEMORYBARRIERPROC)wglGetProcAddress("glMemoryBarrier");
   glUniform4f = (PFNGLUNIFORM4FPROC)wglGetProcAddress("glUniform4f");
+  glGenVertexArrays = (PFNGLGENVERTEXARRAYSPROC)wglGetProcAddress("glGenVertexArrays");
+  glBindVertexArray = (PFNGLBINDVERTEXARRAYPROC)wglGetProcAddress("glBindVertexArray");
 }
 
 INTERNAL
