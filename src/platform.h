@@ -261,7 +261,7 @@ typedef struct {
   };
 } event;
 
-#define MAX_EVENTS 2
+#define MAX_EVENTS 4
 
 typedef struct {
   struct {
@@ -301,3 +301,11 @@ typedef struct {
 * ------------------------------------- */
 
 void game_main(Input *input, game_memory* memory);
+
+/* ------------------------------------- *
+                File IO
+* ------------------------------------- */
+
+void* read_file(char *path);
+void free_file_memory(void* memory);
+unsigned long long int file_modified_time(char* path);

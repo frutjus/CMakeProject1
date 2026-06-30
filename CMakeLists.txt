@@ -10,13 +10,13 @@ project("CMakeProject1")
 
 add_executable(CMakeProject1)
 
-target_sources(CMakeProject1 PRIVATE "game.c" "graphics.c" "datatypes.c"  "allocator.c")
+target_sources(CMakeProject1 PRIVATE "src/game.c" "src/graphics.c" "src/datatypes.c"  "src/allocator.c" "src/conway.c" "src/rts.c")
 
 if(
   (CMAKE_CXX_COMPILER_ID STREQUAL "MSVC") OR
   (CMAKE_CXX_COMPILER_FRONTEND_VARIANT STREQUAL "MSVC")
 )
-  target_sources(CMakeProject1 PRIVATE "win32.c")
+  target_sources(CMakeProject1 PRIVATE "src/win32.c")
 
   target_compile_options(CMakeProject1 PRIVATE /W3)
 

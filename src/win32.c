@@ -1,8 +1,8 @@
 ﻿#include "platform.h"
 #include "defs.h"
 #include "graphics.h"
-#include "lib/gl.h"
-#include "lib/glext.h"
+#include "../lib/gl.h"
+#include "../lib/glext.h"
 
 #include <Windows.h>
 
@@ -45,6 +45,16 @@ void report_error_exit(char *context)
   ExitProcess(report_error(context));
 }
 
+#define CATCH_WIN32_ERROR(errstr) \
+  { \
+    DWORD err = GetLastError(); \
+    char* errstr; \
+    FormatMessageA( \
+      FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS, \
+      NULL, err, 0, (LPSTR)&errstr, 0, NULL); \
+    ASSERT(0); \
+  }
+
 INTERNAL
 long long int get_tick()
 {
@@ -53,10 +63,6 @@ long long int get_tick()
   return t.QuadPart;
 }
 
-/* ------------------------------------- *
-            Main Win32 Handling
- * ------------------------------------- */
-
 typedef struct {
   void* start;
   void* write;
@@ -64,6 +70,208 @@ typedef struct {
   int size;
   int size_used;
 } ring_buffer;
+
+INTERNAL
+bool alloc_ring_buffer(ring_buffer *buf, int size)
+{
+  // this function provided courtesy of the Microsoft docs on VirtualAlloc2
+  // todo: this function relies on relatively recent Windows functionality;
+  // i.e. VirtualAlloc2 and MapViewOfFile3 which are provided in mincore.dll
+  // it would be nice to have a fallback version which would still work if that is unavailable
+
+  SYSTEM_INFO sysInfo;
+  GetSystemInfo(&sysInfo);
+
+  if ((size % sysInfo.dwAllocationGranularity) != 0) {
+    return false;
+  }
+
+  //
+  // Reserve a placeholder region where the buffer will be mapped.
+  //
+
+  void* placeholder1 = VirtualAlloc2(
+    NULL,
+    NULL,
+    2 * size,
+    MEM_RESERVE | MEM_RESERVE_PLACEHOLDER,
+    PAGE_NOACCESS,
+    NULL, 0
+  );
+
+  if (placeholder1 == NULL)
+    CATCH_WIN32_ERROR(errstr);
+
+  //
+  // Split the placeholder region into two regions of equal size.
+  //
+
+  BOOL result = VirtualFree (
+    placeholder1,
+    size,
+    MEM_RELEASE | MEM_PRESERVE_PLACEHOLDER
+  );
+
+  if (result == FALSE)
+    CATCH_WIN32_ERROR(errstr);
+
+  void* placeholder2 = (void*)((ULONG_PTR)placeholder1 + size);
+
+  //
+  // Create a pagefile-backed section for the buffer.
+  //
+
+  HANDLE section = CreateFileMappingA(
+    INVALID_HANDLE_VALUE,
+    NULL,
+    PAGE_READWRITE,
+    0,
+    size, NULL
+  );
+
+  if (section == NULL)
+    CATCH_WIN32_ERROR(errstr);
+
+  //
+  // Map the section into the first placeholder region.
+  //
+
+  void* view1 = MapViewOfFile3 (
+    section,
+    NULL,
+    placeholder1,
+    0,
+    size,
+    MEM_REPLACE_PLACEHOLDER,
+    PAGE_READWRITE,
+    NULL, 0
+  );
+
+  if (view1 == NULL)
+    CATCH_WIN32_ERROR(errstr);
+
+  //
+  // Map the section into the second placeholder region.
+  //
+
+  void* view2 = MapViewOfFile3 (
+    section,
+    NULL,
+    placeholder2,
+    0,
+    size,
+    MEM_REPLACE_PLACEHOLDER,
+    PAGE_READWRITE,
+    NULL, 0
+  );
+
+  if (view2 == NULL)
+    CATCH_WIN32_ERROR(errstr);
+
+  //
+  // Success
+  //
+
+  buf->start = view1;
+  buf->write = view1;
+  buf->read = view1;
+  buf->size = size;
+  buf->size_used = 0;
+
+  CloseHandle(section);
+
+  return true;
+}
+
+INTERNAL
+void free_ring_buffer(ring_buffer *buf)
+{
+  if (buf->start != NULL) {
+    void* page1 = buf->start;
+    void* page2 = (void*)((ULONG_PTR)buf->start + buf->size);
+    UnmapViewOfFileEx(page1, 0);
+    UnmapViewOfFileEx(page2, 0);
+    VirtualFree(page1, 0, MEM_RELEASE);
+    VirtualFree(page2, 0, MEM_RELEASE);
+  }
+
+  buf->start = 0;
+  buf->size = 0;
+  buf->read = 0;
+  buf->write = 0;
+}
+
+INTERNAL
+bool is_ring_buffer_full(ring_buffer* buf)
+{
+  return buf->size_used >= buf->size;
+}
+
+#define bump_ring_buffer_with(buf, type, var) \
+for (type* var = (type*)(buf)->write; \
+  var == (type*)(buf)->write; \
+  (buf)->write = ((ULONG_PTR)(buf)->write >= (ULONG_PTR)(buf)->start + (ULONG_PTR)(buf)->size) \
+    ? (void*)((ULONG_PTR)(buf)->write - (ULONG_PTR)(buf)->size + sizeof(type)) \
+    : (void*)((ULONG_PTR)(buf)->write + sizeof(type)), \
+  (buf)->size_used += sizeof(type) \
+)
+
+/* ------------------------------------- *
+       Functions exported to game
+* ------------------------------------- */
+
+void* read_file(char *path)
+{
+  HANDLE file = CreateFileA(path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
+  if (file == INVALID_HANDLE_VALUE)
+    CATCH_WIN32_ERROR(errstr);
+
+  LARGE_INTEGER size;
+  if (GetFileSizeEx(file, &size) == 0)
+    CATCH_WIN32_ERROR(errstr);
+
+  void* memory = VirtualAlloc(NULL, size.QuadPart + 1, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+  if (memory == NULL)
+    CATCH_WIN32_ERROR(errstr);
+
+  ASSERT(size.HighPart == 0);
+
+  DWORD bytes_read;
+  if (ReadFile(file, memory, size.LowPart, &bytes_read, NULL) == FALSE)
+    CATCH_WIN32_ERROR(errstr);
+
+  ((char*)memory)[bytes_read] = '\0';
+
+  CloseHandle(file);
+
+  return memory;
+}
+
+void free_file_memory(void* memory)
+{
+  if (VirtualFree(memory, 0, MEM_RELEASE) == FALSE)
+    CATCH_WIN32_ERROR(errstr);
+}
+
+unsigned long long int file_modified_time(char* path)
+{
+  HANDLE file = CreateFileA(path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
+  if (file == INVALID_HANDLE_VALUE)
+    //CATCH_WIN32_ERROR(errstr);
+    return 0;
+
+  FILETIME time;
+  if (GetFileTime(file, NULL, NULL, &time) == FALSE)
+    CATCH_WIN32_ERROR(errstr);
+
+  CloseHandle(file);
+
+  return *(unsigned long long int*)&time;
+}
+
+/* ------------------------------------- *
+            Main Win32 Handling
+ * ------------------------------------- */
 
 INTERNAL
 Key key_from_scancode(WORD scancode)
@@ -273,156 +481,6 @@ Key key_from_scancode(WORD scancode)
 
   return KEY_INVALID;
 }
-
-INTERNAL
-bool alloc_ring_buffer(ring_buffer *buf, int size)
-{
-  // this function provided courtesy of the Microsoft docs on VirtualAlloc2
-  // todo: this function relies on relatively recent Windows functionality;
-  // i.e. VirtualAlloc2 and MapViewOfFile3 which are provided in mincore.dll
-  // it would be nice to have a fallback version which would still work if that is unavailable
-
-  SYSTEM_INFO sysInfo;
-  GetSystemInfo(&sysInfo);
-
-  if ((size % sysInfo.dwAllocationGranularity) != 0) {
-    return false;
-  }
-
-  //
-  // Reserve a placeholder region where the buffer will be mapped.
-  //
-
-  void* placeholder1 = VirtualAlloc2(
-    NULL,
-    NULL,
-    2 * size,
-    MEM_RESERVE | MEM_RESERVE_PLACEHOLDER,
-    PAGE_NOACCESS,
-    NULL, 0
-  );
-
-  if (placeholder1 == NULL) {
-    report_error_exit("allocating ring buffer\n");
-  }
-
-  //
-  // Split the placeholder region into two regions of equal size.
-  //
-
-  BOOL result = VirtualFree (
-    placeholder1,
-    size,
-    MEM_RELEASE | MEM_PRESERVE_PLACEHOLDER
-  );
-
-  if (result == FALSE) {
-    report_error_exit("allocating ring buffer\n");
-  }
-
-  void* placeholder2 = (void*)((ULONG_PTR)placeholder1 + size);
-
-  //
-  // Create a pagefile-backed section for the buffer.
-  //
-
-  HANDLE section = CreateFileMappingA(
-    INVALID_HANDLE_VALUE,
-    NULL,
-    PAGE_READWRITE,
-    0,
-    size, NULL
-  );
-
-  if (section == NULL) {
-    report_error_exit("allocating ring buffer\n");
-  }
-
-  //
-  // Map the section into the first placeholder region.
-  //
-
-  void* view1 = MapViewOfFile3 (
-    section,
-    NULL,
-    placeholder1,
-    0,
-    size,
-    MEM_REPLACE_PLACEHOLDER,
-    PAGE_READWRITE,
-    NULL, 0
-  );
-
-  if (view1 == NULL) {
-    report_error_exit("allocating ring buffer\n");
-  }
-
-  //
-  // Map the section into the second placeholder region.
-  //
-
-  void* view2 = MapViewOfFile3 (
-    section,
-    NULL,
-    placeholder2,
-    0,
-    size,
-    MEM_REPLACE_PLACEHOLDER,
-    PAGE_READWRITE,
-    NULL, 0
-  );
-
-  if (view2 == NULL) {
-    report_error_exit("allocating ring buffer\n");
-  }
-
-  //
-  // Success
-  //
-
-  buf->start = view1;
-  buf->write = view1;
-  buf->read = view1;
-  buf->size = size;
-  buf->size_used = 0;
-
-  CloseHandle(section);
-
-  return true;
-}
-
-INTERNAL
-void free_ring_buffer(ring_buffer *buf)
-{
-  if (buf->start != NULL) {
-    void* page1 = buf->start;
-    void* page2 = (void*)((ULONG_PTR)buf->start + buf->size);
-    UnmapViewOfFileEx(page1, 0);
-    UnmapViewOfFileEx(page2, 0);
-    VirtualFree(page1, 0, MEM_RELEASE);
-    VirtualFree(page2, 0, MEM_RELEASE);
-  }
-
-  buf->start = 0;
-  buf->size = 0;
-  buf->read = 0;
-  buf->write = 0;
-}
-
-INTERNAL
-bool is_ring_buffer_full(ring_buffer* buf)
-{
-  return buf->size_used >= buf->size;
-}
-
-#define bump_ring_buffer_with(buf, type, var) \
-for (type* var = (type*)(buf)->write; \
-  var == (type*)(buf)->write; \
-  (buf)->write = ((ULONG_PTR)(buf)->write >= (ULONG_PTR)(buf)->start + (ULONG_PTR)(buf)->size) \
-    ? (void*)((ULONG_PTR)(buf)->write - (ULONG_PTR)(buf)->size + sizeof(type)) \
-    : (void*)((ULONG_PTR)(buf)->write + sizeof(type)), \
-  (buf)->size_used += sizeof(type) \
-)
 
 #define WGL_IMPORT(type, fun) fun = (type)wglGetProcAddress(fun)
 
@@ -751,7 +809,8 @@ int APIENTRY WinMain(HINSTANCE hInst, HINSTANCE hInstPrev, PSTR cmdline, int cmd
     window_class.lpszClassName = "creative window class name";
 
     ATOM window_class_id = RegisterClassA(&window_class);
-    if (window_class_id == 0) report_error_exit("registering window class");
+    if (window_class_id == 0)
+      CATCH_WIN32_ERROR(errstr);
 
     global_state.resolution.x = 960;
     global_state.resolution.y = 540;
@@ -773,7 +832,8 @@ int APIENTRY WinMain(HINSTANCE hInst, HINSTANCE hInstPrev, PSTR cmdline, int cmd
       hInst,
       NULL
     );
-    if (hWnd == NULL) report_error_exit("creating window");
+    if (hWnd == NULL)
+      CATCH_WIN32_ERROR(errstr);
 
     window = hWnd;
 
@@ -817,14 +877,18 @@ int APIENTRY WinMain(HINSTANCE hInst, HINSTANCE hInstPrev, PSTR cmdline, int cmd
     HDC hdc = GetDC(window);
 
     int pixel_format = ChoosePixelFormat(hdc, &pixel_format_descriptor);
-    if (pixel_format == 0) report_error_exit("choosing pixel format");
+    if (pixel_format == 0)
+      CATCH_WIN32_ERROR(errstr);
 
-    if (SetPixelFormat(hdc, pixel_format, &pixel_format_descriptor) == FALSE) report_error_exit("setting pixel format");
+    if (SetPixelFormat(hdc, pixel_format, &pixel_format_descriptor) == FALSE)
+      CATCH_WIN32_ERROR(errstr);
 
     HGLRC opengl_context = wglCreateContext(hdc);
-    if (opengl_context == NULL) report_error_exit("creating opengl context");
+    if (opengl_context == NULL)
+      CATCH_WIN32_ERROR(errstr);
 
-    if (wglMakeCurrent(hdc, opengl_context) == FALSE) report_error_exit("making opengl context current");
+    if (wglMakeCurrent(hdc, opengl_context) == FALSE)
+      CATCH_WIN32_ERROR(errstr);
 
     ReleaseDC(window, hdc);
 
@@ -837,7 +901,8 @@ int APIENTRY WinMain(HINSTANCE hInst, HINSTANCE hInstPrev, PSTR cmdline, int cmd
   {
     memory.size = 1024 * 1024 * 20;
     memory.buffer = VirtualAlloc(NULL, memory.size, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
-    if (memory.buffer == NULL) report_error_exit("allocating memory\n");
+    if (memory.buffer == NULL)
+      CATCH_WIN32_ERROR(errstr);
 
     global_state.game_input = &game_input;
   }
